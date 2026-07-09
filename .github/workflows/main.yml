@@ -107,7 +107,17 @@ jobs:
       - name: Build FontForge
         working-directory: repo
         run: |
-          FFCONFIG="-DCMAKE_INSTALL_PREFIX=$PREFIX -DENABLE_FONTFORGE_EXTRAS=ON -DCMAKE_FIND_ROOT_PATH=/usr/local/opt/gettext"
+          # The macOS runners ship Mono, whose framework bundles an ancient
+          # libpng (1.4.12) header under /Library/Frameworks. macOS CMake
+          # searches frameworks first, so it compiled against that header while
+          # the app linked Homebrew's libpng (1.6.58); libpng rejects every PNG
+          # on that version mismatch, so the toolbar/menu icons silently vanish.
+          # Pin libpng's header and library to Homebrew so the two versions match
+          # (find_package(PNG) uses these directly, changing nothing else).
+          FFCONFIG="-DCMAKE_INSTALL_PREFIX=$PREFIX -DENABLE_FONTFORGE_EXTRAS=ON \
+            -DPNG_PNG_INCLUDE_DIR=$(brew --prefix libpng)/include \
+            -DPNG_LIBRARY=$(brew --prefix libpng)/lib/libpng.dylib \
+            -DCMAKE_FIND_ROOT_PATH=/usr/local/opt/gettext"
           mkdir build && pushd build && cmake -GNinja $FFCONFIG .. && popd
           ninja -C build install
       - name: Run FontForge tests
