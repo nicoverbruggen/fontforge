@@ -767,6 +767,28 @@ const char *getHelpDir(void) {
     return helpdir;
 }
 
+const char *getPixmapThemeFile(void) {
+    static char *themefile=NULL;
+    if (!themefile) {
+        /* The theme's 'resources' file is produced by configure_file() into the
+           build tree, whereas in devel mode getPixmapDir() points at the source
+           pixmaps (the icons), where that generated file does not exist. Prefer
+           the build-tree copy so the UI theme loads when running uninstalled. */
+        if (devel_env) {
+            char *build = smprintf("%s/fontforgeexe/pixmaps/%s/resources", program_root, GUI_THEME);
+            if (GFileExists(build)) {
+                themefile = build;
+            } else {
+                free(build);
+            }
+        }
+        if (!themefile) {
+            themefile = smprintf("%s/resources", getPixmapDir());
+        }
+    }
+    return themefile;
+}
+
 /* reimplementation of GFileGetHomeDir, avoiding copy().  Returns NULL if home
  * directory cannot be found */
 const char *getUserHomeDir(void) {

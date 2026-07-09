@@ -1,0 +1,91 @@
+name: Personal Fork macOS (arm64)
+
+# Fork-only workflow: builds the macOS app bundle for Apple Silicon (arm64)
+# and publishes the .dmg to this fork's Releases page. Intentionally does NOT
+# build Linux / Windows / Intel. The shared CI in main.yml does not run on this
+# branch (it only triggers on master / releases / PRs to master).
+
+on:
+  push:
+    branches: [ personal-fork ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create a Release and upload the .dmg
+
+jobs:
+  mac-arm64:
+    runs-on: macos-14   # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: repo
+      - name: Set build version (date-based, YYYYMMDD)
+        working-directory: repo
+        run: |
+          # One date, one format (YYYYMMDD) used everywhere: the FontForge
+          # version, the .dmg asset name, and the release title/tag.
+          echo "FF_VERSION=$(date +%Y%m%d)" >> "$GITHUB_ENV"   # e.g. 20260709
+          # Stamp the version into the source so the built app reports today's date.
+          sed -E "s/(project\(fontforge VERSION )[0-9]+/\1$(date +%Y%m%d)/" CMakeLists.txt > CMakeLists.tmp
+          mv CMakeLists.tmp CMakeLists.txt
+          grep "project(fontforge VERSION" CMakeLists.txt
+      - name: Install dependencies
+        run: |
+          brew install cairo coreutils fontconfig gettext giflib gtk+3 gtkmm3 jpeg libpng libspiro libtiff libtool libuninameslist python@3 wget woff2 --quiet
+          # Use the real Homebrew prefix (/opt/homebrew on arm64). Hardcoding the
+          # Intel /usr/local path lets CMake pick up a stale system libpng for
+          # headers while the bundle links Homebrew's newer one -- the version
+          # mismatch makes libpng refuse every .png, so no toolbar/menu icons.
+          BREW="$(brew --prefix)"
+          echo "BREW=$BREW" >> "$GITHUB_ENV"
+          PREFIX=$GITHUB_WORKSPACE/target
+          echo "PREFIX=$PREFIX" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$BREW/lib/pkgconfig:$BREW/opt/libffi/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PATH=$BREW/opt/ruby/bin:$BREW/opt/gettext/bin:$PATH" >> $GITHUB_ENV
+      - name: Build FontForge
+        working-directory: repo
+        run: |
+          # The runner has Mono installed, and /Library/Frameworks/Mono.framework
+          # bundles ancient libpng/jpeg/tiff headers. macOS CMake searches
+          # frameworks FIRST, so Mono's png.h (1.4.12) shadowed Homebrew's while
+          # the app still linked Homebrew's libpng (1.6.58) -- that header/lib
+          # version mismatch makes libpng reject every .png (no icons).
+          #   CMAKE_FIND_FRAMEWORK=LAST -> prefer real Homebrew/system headers.
+          #   CMAKE_PREFIX_PATH=$BREW   -> resolve deps from one Homebrew prefix.
+          #   Explicit PNG hints        -> belt-and-suspenders on the culprit.
+          FFCONFIG="-DCMAKE_INSTALL_PREFIX=$PREFIX -DENABLE_FONTFORGE_EXTRAS=ON \
+            -DCMAKE_PREFIX_PATH=$BREW -DCMAKE_FIND_FRAMEWORK=LAST \
+            -DCMAKE_FIND_ROOT_PATH=$BREW/opt/gettext \
+            -DPNG_PNG_INCLUDE_DIR=$BREW/opt/libpng/include \
+            -DPNG_LIBRARY=$BREW/opt/libpng/lib/libpng.dylib"
+          mkdir build && pushd build && cmake -GNinja $FFCONFIG .. && popd
+          ninja -C build install
+      - name: Build app bundle (.dmg)
+        # No signing secrets on the fork, so ffosxbuild.sh ad-hoc signs it.
+        # The .dmg is produced because GitHub Actions sets CI=true.
+        working-directory: repo/build
+        run: ninja macbundle
+      - name: Name the .dmg by date
+        working-directory: repo/build/osx
+        run: |
+          SRC=$(ls FontForge-*.dmg)
+          DEST="FontForge-${FF_VERSION}-arm64.dmg"
+          mv "$SRC" "$DEST"
+          echo "DMG_NAME=$DEST" >> "$GITHUB_ENV"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macOS_appbundle_arm64
+          path: repo/build/osx/FontForge-*-arm64.dmg
+      - name: Publish to fork Releases
+        working-directory: repo/build/osx
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Replace any existing release for the same day so re-runs don't collide.
+          gh release delete "$FF_VERSION" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$FF_VERSION" "$DMG_NAME" \
+            --target "${{ github.sha }}" \
+            --title "FontForge $FF_VERSION (arm64)" \
+            --notes ""
